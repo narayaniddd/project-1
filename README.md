@@ -1,4 +1,4 @@
-# EEG + GSR + PSY Merger and Machine-Learning Interface
+# cognitive load detection 
 
 ## 1. Project overview
 
