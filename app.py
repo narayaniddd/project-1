@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 from scipy.signal import find_peaks
 
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -61,11 +61,11 @@ GSR_REQUIRED_COLUMNS = [
 
 KEYS = ["Student_ID", "QuestionKey"]
 
-# Random Forest remains. Soft-voting Ensemble is removed.
 MODEL_OPTIONS = [
     "Logistic Regression",
     "SVM",
     "Random Forest",
+    "Soft-voting Ensemble",
     "LightGBM",
     "XGBoost",
 ]
@@ -696,6 +696,7 @@ def build_model(model_name):
                 max_iter=3000,
                 class_weight="balanced",
                 C=0.1,
+                random_state=42,
             )),
         ])
 
@@ -714,7 +715,6 @@ def build_model(model_name):
         ])
 
     if model_name == "Random Forest":
-        # Conservative settings are intended to limit overfitting.
         return Pipeline([
             ("imputer", SimpleImputer(strategy="median")),
             ("random_forest", RandomForestClassifier(
@@ -728,6 +728,20 @@ def build_model(model_name):
                 n_jobs=-1,
             )),
         ])
+
+    if model_name == "Soft-voting Ensemble":
+        # Each estimator is a pipeline so preprocessing is fitted
+        # independently within that estimator.
+        estimators = [
+            ("svm", build_model("SVM")),
+            ("random_forest", build_model("Random Forest")),
+            ("logistic_regression", build_model("Logistic Regression")),
+        ]
+
+        return VotingClassifier(
+            estimators=estimators,
+            voting="soft",
+        )
 
     if model_name == "LightGBM":
         try:
@@ -813,9 +827,8 @@ def make_student_split(X, y, groups):
     """
     Make one fixed student-level split.
 
-    The test fraction is fixed in code at 25%; it is not a user control.
-    Tries several seeds to find a split with all classes represented
-    in the training data.
+    The test fraction is 25%. Tries several seeds to find a split with
+    every class represented in the training data.
     """
     all_classes = set(y.unique())
 
@@ -844,7 +857,7 @@ def train_and_evaluate_models(
     selected_models,
     split_type,
 ):
-    """Train selected models and return the requested five result columns."""
+    """Train selected models and return performance metrics and predictions."""
     working = data.copy()
 
     if target_column not in working.columns:
@@ -992,18 +1005,23 @@ def train_and_evaluate_models(
             "Predicted": predictions,
         })
 
+        test_rows = working.iloc[test_idx]
+
         if "Student_ID" in working.columns:
             prediction_frame.insert(
                 0,
                 "Student_ID",
-                working.iloc[test_idx]["Student_ID"].to_numpy(),
+                test_rows["Student_ID"].to_numpy(),
             )
 
         if "QuestionKey" in working.columns:
+            insert_position = (
+                1 if "Student_ID" in prediction_frame.columns else 0
+            )
             prediction_frame.insert(
-                1 if "Student_ID" in prediction_frame.columns else 0,
+                insert_position,
                 "QuestionKey",
-                working.iloc[test_idx]["QuestionKey"].to_numpy(),
+                test_rows["QuestionKey"].to_numpy(),
             )
 
         predictions_by_model[model_name] = prediction_frame
@@ -1162,8 +1180,16 @@ if "final_data" in st.session_state:
 
     st.subheader("Download output files")
     download_csv("Download final dataset", final, "EEG_GSR_PSY_Final.csv")
-    download_csv("Download question-level EEG", eeg, "EEG_Question_Level.csv")
-    download_csv("Download question-level GSR", gsr, "GSR_Question_Level.csv")
+    download_csv(
+        "Download question-level EEG",
+        eeg,
+        "EEG_Question_Level.csv",
+    )
+    download_csv(
+        "Download question-level GSR",
+        gsr,
+        "GSR_Question_Level.csv",
+    )
     download_csv(
         "Download EEG-GSR merged data",
         physiology,
@@ -1230,6 +1256,7 @@ if "final_data" in st.session_state:
                 "Logistic Regression",
                 "SVM",
                 "Random Forest",
+                "Soft-voting Ensemble",
             ],
         )
 
@@ -1289,4 +1316,4 @@ if "final_data" in st.session_state:
                 except ImportError as exc:
                     st.error(str(exc))
                 except Exception as exc:
-                    st.error(f"Model training failed: {exc}")
+                    st.error(f"Model training failed: {exc}") 
